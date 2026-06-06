@@ -66,14 +66,17 @@ def _save_grid_with_circle(pil_img: Image.Image, coord: Tuple[int, int], path: s
             LOG.debug(f"Failed to save grid image to {path}")
 
 
-def match_template(screen_img: Image.Image, template_path: str, threshold: float = 0.8) -> Optional[Tuple[int, int, int, int]]:
+def match_template_with_score(screen_img: Image.Image, template_path: str, threshold: float = 0.8) -> Tuple[Optional[Tuple[int, int, int, int]], float]:
     """
-    Find the template in screen_img. Returns bounding box (l,t,r,b) of best match or None.
+    Find the template in screen_img. Returns (bounding box (l,t,r,b) or None, best_score).
+
+    The best_score is returned even when below threshold so callers can log how
+    close a match was (useful for diagnosing "button not found" issues).
     Automatically scales large templates to match the current window size.
     """
     if not os.path.exists(template_path):
         LOG.error(f"Template not found: {template_path}")
-        return None
+        return None, -1.0
 
     screen_cv = _pil_to_cv2(screen_img)
     template_pil = Image.open(template_path).convert("RGBA")
@@ -124,10 +127,19 @@ def match_template(screen_img: Image.Image, template_path: str, threshold: float
 
     LOG.debug(f"Template match {template_path} best_score={best_val:.3f}")
     if best_val < threshold:
-        return None
+        return None, best_val
 
     l, t = int(best_loc[0]), int(best_loc[1])
-    return (l, t, l + best_tw, t + best_th)
+    return (l, t, l + best_tw, t + best_th), best_val
+
+
+def match_template(screen_img: Image.Image, template_path: str, threshold: float = 0.8) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Find the template in screen_img. Returns bounding box (l,t,r,b) of best match or None.
+    Thin wrapper over `match_template_with_score` for callers that only need the box.
+    """
+    box, _ = match_template_with_score(screen_img, template_path, threshold=threshold)
+    return box
 
 
 class TaskRunner:
@@ -728,6 +740,9 @@ class TaskRunner:
         """
         # Per-task wait: typical 师门 task takes ~30-60 s; use 60s as safe upper bound.
         SHIMEN_TASK_WAIT = 60.0
+        # Match threshold for the right-side shortcut button. Kept low because the
+        # button carries dynamic count text; we match the cropped (left-half) template.
+        SHIMEN_THRESHOLD = 0.55
 
         completed = 0
         for i in range(count):
@@ -738,12 +753,34 @@ class TaskRunner:
             if img is None:
                 LOG.warning("Capture failed, stopping 师门任务")
                 break
-            tpl_path = os.path.join(self.templates_dir, "Task_ShiMen_crop.png")
-            if not os.path.exists(tpl_path):
-                tpl_path = os.path.join(self.templates_dir, "Task_ShiMen.png")
-            box = match_template(img, tpl_path, threshold=0.60)
+
+            # On the first iteration, always save a reference capture so the test
+            # agent has a frame to inspect when the button is reported "not found".
+            if i == 0:
+                try:
+                    dbg_dir = os.path.join(self.templates_dir, "debug_captures")
+                    os.makedirs(dbg_dir, exist_ok=True)
+                    ref_path = os.path.join(dbg_dir, f"dbg_shimen_start_{int(time.time())}.png")
+                    img.save(ref_path)
+                    LOG.info(f"师门任务: saved start reference capture to {ref_path}")
+                except Exception as e:
+                    LOG.debug(f"师门任务: failed to save start reference capture: {e}")
+
+            # Try both the cropped and full templates; log the best score for each
+            # so we can tell whether the button is genuinely absent or just below
+            # threshold (ISSUE-001 diagnosis).
+            box = None
+            for tpl_name in ("Task_ShiMen_crop.png", "Task_ShiMen.png"):
+                tpl_path = os.path.join(self.templates_dir, tpl_name)
+                if not os.path.exists(tpl_path):
+                    continue
+                cand_box, score = match_template_with_score(img, tpl_path, threshold=SHIMEN_THRESHOLD)
+                LOG.info(f"师门任务: {tpl_name} best_score={score:.3f} (threshold={SHIMEN_THRESHOLD})")
+                if cand_box:
+                    box = cand_box
+                    break
             if not box:
-                LOG.info("师门任务 button not found — all daily tasks completed")
+                LOG.info("师门任务 button not found (all templates below threshold) — assuming all daily tasks completed")
                 break
 
             # 2. Click the 师门任务 button
@@ -855,4 +892,4 @@ class TaskRunner:
         return True
 
 
-__all__ = ["TaskRunner", "match_template"]
+__all__ = ["TaskRunner", "match_template", "match_template_with_score"]

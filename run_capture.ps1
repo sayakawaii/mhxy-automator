@@ -5,6 +5,16 @@ param(
     [string]$ExtraArgs = ""
 )
 
+# --- Force UTF-8 everywhere so Chinese task names / window titles are readable ---
+# (ISSUE-003: garbled Chinese; ISSUE-005: NativeCommandError from stderr capture).
+try { chcp 65001 > $null } catch {}
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {}
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
 $projectRoot = "E:\Documents\Project\Python\mhxy-automator"
 $pyExe       = "$projectRoot\venv\Scripts\python.exe"
 $script      = "$projectRoot\src\run_tasks.py"

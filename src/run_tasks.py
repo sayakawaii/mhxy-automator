@@ -14,10 +14,39 @@ import time
 # Ensure src/ is on the path when run from project root
 sys.path.insert(0, os.path.dirname(__file__))
 
-from utils.logger import Logger
+from utils.logger import Logger, add_file_handler
 from bot.vision import Vision
 from bot.actions import Actions
 from bot.tasks import TaskRunner
+
+
+def _setup_logging() -> str:
+    """Force UTF-8 stdout and attach a canonical UTF-8 log file.
+
+    Returns the path of the UTF-8 log file. This makes log output readable and
+    machine-independent regardless of the host console code page or how the
+    wrapping shell captures output.
+    """
+    # Reconfigure stdout/stderr to UTF-8 where supported (Python 3.7+).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    log_path = ""
+    try:
+        log_dir = os.path.join(os.path.dirname(__file__), "img", "debug_captures")
+        os.makedirs(log_dir, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        log_path = os.path.join(log_dir, f"run_{ts}_utf8.log")
+        add_file_handler(log_path)
+    except Exception:
+        pass
+    return log_path
+
+
+_UTF8_LOG_PATH = _setup_logging()
 
 LOG = Logger(__name__)
 
@@ -190,21 +219,47 @@ def main():
 
     runner = build_runner(win)
 
+    if _UTF8_LOG_PATH:
+        LOG.info(f"UTF-8 log file: {_UTF8_LOG_PATH}")
+
+    # Track each task's result so the final summary always shows every task,
+    # even when a task is skipped or exits early.
+    results = {"师门任务": "skipped", "秘境降妖": "skipped", "宝图任务": "skipped"}
+
     if run_all or args.shimen:
-        LOG.info("=== Starting 师门任务 ===")
-        done = runner.run_shimen_tasks(count=20)
-        LOG.info(f"=== 师门任务 finished: {done} iteration(s) ===")
+        LOG.info("=== START 师门任务 ===")
+        try:
+            done = runner.run_shimen_tasks(count=20)
+            results["师门任务"] = f"{done} iteration(s)"
+        except Exception as e:
+            LOG.error(f"师门任务 raised: {e}")
+            results["师门任务"] = f"ERROR: {e}"
+        LOG.info(f"=== END 师门任务: {results['师门任务']} ===")
 
     if run_all or args.mijing:
-        LOG.info("=== Starting 秘境降妖 ===")
-        ok = runner.run_mijing_tasks()
-        LOG.info(f"=== 秘境降妖 finished: {'OK' if ok else 'FAILED'} ===")
+        LOG.info("=== START 秘境降妖 ===")
+        try:
+            ok = runner.run_mijing_tasks()
+            results["秘境降妖"] = "OK" if ok else "FAILED"
+        except Exception as e:
+            LOG.error(f"秘境降妖 raised: {e}")
+            results["秘境降妖"] = f"ERROR: {e}"
+        LOG.info(f"=== END 秘境降妖: {results['秘境降妖']} ===")
 
     if run_all or args.baotu:
-        LOG.info("=== Starting 宝图任务 ===")
-        ok = runner.run_baotu_tasks()
-        LOG.info(f"=== 宝图任务 finished: {'OK' if ok else 'FAILED'} ===")
+        LOG.info("=== START 宝图任务 ===")
+        try:
+            ok = runner.run_baotu_tasks()
+            results["宝图任务"] = "OK" if ok else "FAILED"
+        except Exception as e:
+            LOG.error(f"宝图任务 raised: {e}")
+            results["宝图任务"] = f"ERROR: {e}"
+        LOG.info(f"=== END 宝图任务: {results['宝图任务']} ===")
 
+    LOG.info(
+        "=== SUMMARY: 师门任务=%s | 秘境降妖=%s | 宝图任务=%s ==="
+        % (results["师门任务"], results["秘境降妖"], results["宝图任务"])
+    )
     LOG.info("All tasks done.")
 
 
